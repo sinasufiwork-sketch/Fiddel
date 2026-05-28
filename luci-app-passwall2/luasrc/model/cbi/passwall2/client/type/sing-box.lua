@@ -72,6 +72,7 @@ o:value("ssh", "SSH")
 if singbox_tags:find("with_naive_outbound") then
 	o:value("naive", "NaïveProxy")
 end
+o:value("_balancing", translate("Balancing"))
 o:value("_urltest", translate("URLTest"))
 o:value("_shunt", translate("Shunt"))
 o:value("_iface", translate("Custom Interface"))
@@ -83,11 +84,12 @@ function o.custom_cfgvalue(self, section)
 	end
 end
 
+local load_balancing_options = s.val["protocol"] == "_balancing" or arg_select_proto == "_balancing"
 local load_urltest_options = s.val["protocol"] == "_urltest" or arg_select_proto == "_urltest"
 local load_shunt_options = s.val["protocol"] == "_shunt" or arg_select_proto == "_shunt"
 local load_iface_options = s.val["protocol"] == "_iface" or arg_select_proto == "_iface"
 local load_normal_options = true
-if load_urltest_options or load_shunt_options or load_iface_options then
+if load_balancing_options or load_urltest_options or load_shunt_options or load_iface_options then
 	load_normal_options = nil
 end
 if not arg_select_proto:find("_") then
@@ -96,6 +98,180 @@ end
 
 local netdev_list = api.get_network_devices()
 local node_list = api.get_node_list()
+local fallback_list = {}
+for k, e in ipairs(node_list.balancing_list or {}) do
+	if e.id ~= arg[1] then
+		fallback_list[#fallback_list + 1] = {
+			id = e["id"],
+			remark = e["remark"],
+			group = e["group"],
+			fallback = e.o["fallback_node"],
+		}
+	end
+end
+
+if load_balancing_options then -- [[ Load balancing Start ]]
+	o = s:option(ListValue, _n("node_add_mode"), translate("Node Addition Method"))
+	o:depends({ [_n("protocol")] = "_balancing" })
+	o.default = "manual"
+	o:value("manual", translate("Manual"))
+	o:value("batch", translate("Batch"))
+
+	o = s:option(MultiValue, _n("balancing_node"), translate("Load balancing node list"), translate("Load balancing node list, <a target='_blank' href='https://sing-box.sagernet.org/configuration/outbound/urltest'>document</a>"))
+	o:depends({ [_n("node_add_mode")] = "manual" })
+	o.widget = "checkbox"
+	o.template = appname .. "/cbi/nodes_multivalue"
+	o.group = {}
+	for k1, v1 in pairs(node_list) do
+		if k1 == "socks_list" or k1 == "normal_list" then
+			for i, v in ipairs(v1) do
+				o:value(v.id, v.remark)
+				o.group[#o.group+1] = v.group or ""
+			end
+		end
+	end
+	function o.cfgvalue(self, section)
+		return m.uci:get_list(appname, section, "balancing_node") or {}
+	end
+	function o.custom_write(self, section, value)
+		local old = m.uci:get_list(appname, section, "balancing_node") or {}
+		local new, set = {}, {}
+		for v in value:gmatch("%S+") do
+			new[#new + 1] = v
+			set[v] = 1
+		end
+		for _, v in ipairs(old) do
+			if not set[v] then
+				m.uci:set_list(appname, section, "balancing_node", new)
+				return
+			end
+			set[v] = nil
+		end
+		for _ in pairs(set) do
+			m.uci:set_list(appname, section, "balancing_node", new)
+			return
+		end
+	end
+
+	o = s:option(MultiValue, _n("node_group"), translate("Select Group"))
+	o:depends({ [_n("node_add_mode")] = "batch" })
+	o.widget = "checkbox"
+	o:value("default", translate("default"))
+	for k, v in pairs(groups) do
+		o:value(api.UrlEncode(k), k)
+	end
+
+	o = s:option(Value, _n("node_match_rule"), translate("Node Matching Rules"))
+	o:depends({ [_n("node_add_mode")] = "batch" })
+	local descrStr = "Example: <code>^A && B && !C && D$</code><br>"
+	descrStr = descrStr .. "This means the node remark must start with A (^), include B, exclude C (!), and end with D ($).<br>"
+	descrStr = descrStr .. "Conditions are joined by <code>&&</code>, and their order does not affect the result."
+	o.description = translate(descrStr)
+
+	o = s:option(ListValue, _n("balancingStrategy"), translate("Balancing Strategy"))
+	o:depends({ [_n("protocol")] = "_balancing" })
+	o:value("random")
+	o:value("roundRobin")
+	o:value("leastPing")
+	o:value("leastLoad")
+	o.default = "random"
+
+	o = s:option(ListValue, _n("fallback_node"), translate("Fallback Node"))
+	o.group = {"",""}
+	o:value("", translate("Close(Not use)"))
+	o:value("_direct", translate("Direct Connection"))
+	o:depends({ [_n("protocol")] = "_balancing" })
+	o.template = appname .. "/cbi/nodes_listvalue"
+	local MAX_FALLBACK_DEPTH = 3
+	local function will_loop(start_id, target_id, depth)
+		depth = depth or 0
+		if depth >= MAX_FALLBACK_DEPTH then
+			return false
+		end
+		for _, v in ipairs(fallback_list) do
+			if v.id == target_id then
+				local fb = v.fallback
+				if not fb or fb == "" or fb == "_direct" then
+					return false
+				end
+				if fb == start_id then
+					return true
+				end
+				return will_loop(start_id, fb, depth + 1)
+			end
+		end
+		return false
+	end
+	local function get_fallback_depth(id, depth)
+		depth = depth or 0
+		if depth >= MAX_FALLBACK_DEPTH then
+			return depth
+		end
+		for _, v in ipairs(fallback_list) do
+			if v.id == id then
+				local fb = v.fallback
+				if not fb or fb == "" or fb == "_direct" then
+					return depth
+				end
+				return get_fallback_depth(fb, depth + 1)
+			end
+		end
+		return depth
+	end
+	for _, v in ipairs(fallback_list) do
+		local depth = get_fallback_depth(v.id)
+		if depth < MAX_FALLBACK_DEPTH
+			and not will_loop(arg[1], v.id)
+		then
+			o:value(v.id, v.remark)
+			o.group[#o.group + 1] = (v.group and v.group ~= "") and v.group or translate("default")
+		end
+	end
+	for k1, v1 in pairs(node_list) do
+		if k1 == "socks_list" or k1 == "normal_list" or k1 == "urltest_list" or k1 == "balancing_list" then
+			for i, v in ipairs(v1) do
+				o:value(v.id, v.remark)
+				o.group[#o.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
+			end
+		end
+	end
+
+	o = s:option(Flag, _n("useCustomProbeUrl"), translate("Use Custom Probe URL"), translate("By default the built-in probe URL will be used, enable this option to use a custom probe URL."))
+	o:depends({ [_n("protocol")] = "_balancing" })
+
+	o = s:option(Value, _n("probeUrl"), translate("Probe URL"))
+	o:depends({ [_n("useCustomProbeUrl")] = true })
+	o:value("https://cp.cloudflare.com/", "Cloudflare")
+	o:value("https://www.gstatic.com/generate_204", "Gstatic")
+	o:value("https://www.google.com/generate_204", "Google")
+	o:value("https://www.youtube.com/generate_204", "YouTube")
+	o:value("https://connect.rom.miui.com/generate_204", "MIUI (CN)")
+	o:value("https://connectivitycheck.platform.hicloud.com/generate_204", "HiCloud (CN)")
+	o.default = "https://www.google.com/generate_204"
+	o.description = translate("The URL used to detect the connection status.")
+
+	o = s:option(Value, _n("probeInterval"), translate("Probe Interval"))
+	o:depends({ [_n("protocol")] = "_balancing" })
+	o.default = "1m"
+	o.placeholder = "1m"
+	o.description = translate("The interval between initiating probes.") .. "<br>" ..
+			translate("The time format is numbers + units, such as '10s', '2h45m', and the supported time units are <code>s</code>, <code>m</code>, <code>h</code>, which correspond to seconds, minutes, and hours, respectively.") .. "<br>" ..
+			translate("When the unit is not filled in, it defaults to seconds.")
+
+	o = s:option(Value, _n("expected"), translate("Preferred Node Count"))
+	o:depends({ [_n("balancingStrategy")] = "leastLoad" })
+	o.datatype = "uinteger"
+	o.default = "2"
+	o.placeholder = "2"
+	o.description = translate("The load balancer selects the optimal number of nodes, and traffic is randomly distributed among them.")
+
+	o = s:option(Value, _n("tolerance"), translate("Failure Tolerance (%)"))
+	o:depends({ [_n("balancingStrategy")] = "leastLoad" })
+	o.datatype = "uinteger"
+	o.default = "10"
+	o.placeholder = "10"
+	o.description = translate("The maximum acceptable speed test failure rate. For example, 1 means allowing a 1% failure rate.")
+end -- [[ Load balancing End ]]
 
 if load_urltest_options then -- [[ URLTest Start ]]
 	o = s:option(ListValue, _n("node_add_mode"), translate("Node Addition Method"))
@@ -865,7 +1041,7 @@ end
 if not load_shunt_options then
 	o = s:option(ListValue, _n("chain_proxy"), translate("Chain Proxy"))
 	o:value("", translate("Close(Not use)"))
-	if not (load_iface_options or load_urltest_options) then
+	if not (load_iface_options or load_urltest_options or load_balancing_options) then
 		-- Special node cannot be use pre-proxy.
 		o:value("1", translate("Preproxy Node"))
 		o:value("3", translate("Outbound Interface"))

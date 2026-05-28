@@ -2258,6 +2258,12 @@ msgstr "Xray 負載均衡節點 [%s] 列表"
 msgid "Xray Load Balancing node [%s] backup node"
 msgstr "Xray 負載均衡節點 [%s] 後備節點"
 
+msgid "Sing-Box Load Balancing node [%s] list"
+msgstr "Sing-Box 負載均衡節點 [%s] 列表"
+
+msgid "Sing-Box Load Balancing node [%s] backup node"
+msgstr "Sing-Box 負載均衡節點 [%s] 後備節點"
+
 msgid "Sing-Box URLTest node [%s] list"
 msgstr "Sing-Box URLTest 節點 [%s] 列表"
 

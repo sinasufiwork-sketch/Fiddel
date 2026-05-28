@@ -291,11 +291,14 @@ do
 				
 			end
 		elseif node.protocol and node.protocol == '_balancing' then
-			local flag = i18n.translatef("Xray Load Balancing node [%s] list", node_id)
+			local balancing_node_cfg = node
+			local flag = (balancing_node_cfg.type == "sing-box")
+				and i18n.translatef("Sing-Box Load Balancing node [%s] list", node_id)
+				or i18n.translatef("Xray Load Balancing node [%s] list", node_id)
 			local currentNodes = {}
 			local newNodes = {}
-			if node.balancing_node then
-				for k, node in pairs(node.balancing_node) do
+			if balancing_node_cfg.balancing_node then
+				for k, node in pairs(balancing_node_cfg.balancing_node) do
 					currentNodes[#currentNodes + 1] = {
 						log = true,
 						node = node,
@@ -332,7 +335,9 @@ do
 				CONFIG[#CONFIG + 1] = {
 					log = true,
 					id = node_id,
-					remarks = i18n.translatef("Xray Load Balancing node [%s] backup node", node_id),
+					remarks = (balancing_node_cfg.type == "sing-box")
+						and i18n.translatef("Sing-Box Load Balancing node [%s] backup node", node_id)
+						or i18n.translatef("Xray Load Balancing node [%s] backup node", node_id),
 					currentNode = uci:get_all(appname, currentNode.fallback_node) or nil,
 					set = function(o, server)
 						uci:set(appname, node_id, "fallback_node", server)

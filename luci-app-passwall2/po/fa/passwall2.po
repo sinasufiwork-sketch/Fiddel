@@ -2266,6 +2266,12 @@ msgstr "لیست گره‌های توزیع بار Xray [%s]"
 msgid "Xray Load Balancing node [%s] backup node"
 msgstr "گره پشتیبان گره توزیع بار Xray [%s]"
 
+msgid "Sing-Box Load Balancing node [%s] list"
+msgstr "لیست گره‌های توزیع بار Sing-Box [%s]"
+
+msgid "Sing-Box Load Balancing node [%s] backup node"
+msgstr "گره پشتیبان گره توزیع بار Sing-Box [%s]"
+
 msgid "Sing-Box URLTest node [%s] list"
 msgstr "لیست گره‌های URLTest Sing-Box [%s]"
 

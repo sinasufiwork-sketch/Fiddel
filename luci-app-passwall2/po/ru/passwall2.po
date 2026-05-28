@@ -2264,6 +2264,12 @@ msgstr "Список серверов балансировки Xray [%s]"
 msgid "Xray Load Balancing node [%s] backup node"
 msgstr "Резервный сервер балансировки Xray [%s]"
 
+msgid "Sing-Box Load Balancing node [%s] list"
+msgstr "Список серверов балансировки Sing-Box [%s]"
+
+msgid "Sing-Box Load Balancing node [%s] backup node"
+msgstr "Резервный сервер балансировки Sing-Box [%s]"
+
 msgid "Sing-Box URLTest node [%s] list"
 msgstr "Список серверов Sing-Box URLTest [%s]"
 

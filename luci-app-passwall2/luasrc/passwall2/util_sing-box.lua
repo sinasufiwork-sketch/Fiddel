@@ -1297,7 +1297,7 @@ function gen_config(var)
 		end
 
 		local nodes_list = {}
-		function get_urltest_batch_nodes(_node)
+		function get_batch_nodes(_node)
 			if #nodes_list == 0 then
 				for k, e in ipairs(api.get_valid_nodes()) do
 					if e.node_type == "normal" and (not e.chain_proxy or e.chain_proxy == "") then
@@ -1321,6 +1321,14 @@ function gen_config(var)
 				end
 			end
 			return nodes
+		end
+
+		function get_urltest_batch_nodes(_node)
+			return get_batch_nodes(_node)
+		end
+
+		function get_balancing_batch_nodes(_node)
+			return get_batch_nodes(_node)
 		end
 	
 		function get_node_by_id(node_id)
@@ -1381,6 +1389,116 @@ function gen_config(var)
 			return outbound
 		end
 
+		local function singbox_supports_loadbalance()
+			local bin = api.finded_com("sing-box")
+			if not bin then return false end
+			local tags = sys.exec(bin .. " version 2>/dev/null")
+			return tags:find("with_loadbalance") ~= nil
+		end
+
+		function gen_balancing_outbound(_node)
+			local balancing_id = _node[".name"]
+			local balancing_tag = "balancing-" .. balancing_id
+			for _, v in ipairs(outbounds) do
+				if v.tag == balancing_tag then
+					return v, true
+				end
+			end
+			local blc_nodes
+			if _node.node_add_mode and _node.node_add_mode == "batch" then
+				blc_nodes = get_balancing_batch_nodes(_node)
+			else
+				blc_nodes = _node.balancing_node
+			end
+			local valid_nodes = {}
+			for i = 1, #(blc_nodes or {}) do
+				local blc_node_id = blc_nodes[i]
+				local blc_node_tag = "blc-" .. blc_node_id
+				local is_new_blc_node = true
+				for _, outbound in ipairs(outbounds) do
+					if string.sub(outbound.tag, 1, #blc_node_tag) == blc_node_tag then
+						is_new_blc_node = false
+						valid_nodes[#valid_nodes + 1] = outbound.tag
+						break
+					end
+				end
+				if is_new_blc_node then
+					local outboundTag = gen_outbound_get_tag(flag, blc_node_id, blc_node_tag, { fragment = singbox_settings.fragment == "1" or nil, record_fragment = singbox_settings.record_fragment == "1" or nil, run_socks_instance = not no_run })
+					if outboundTag then
+						valid_nodes[#valid_nodes + 1] = outboundTag
+					end
+				end
+			end
+			if #valid_nodes == 0 then return nil end
+
+			local fallback_node_id = _node.fallback_node
+			fallback_node_id = (fallback_node_id and fallback_node_id ~= "") and fallback_node_id or nil
+			if fallback_node_id then
+				if fallback_node_id == "_direct" then
+					valid_nodes[#valid_nodes + 1] = "direct"
+				else
+					local fallback_node = get_node_by_id(fallback_node_id)
+					if fallback_node then
+						if fallback_node.protocol == "_balancing" then
+							local fb_outbound, exist = gen_balancing_outbound(fallback_node)
+							if fb_outbound then
+								if not exist then
+									table.insert(outbounds, fb_outbound)
+								end
+								valid_nodes[#valid_nodes + 1] = fb_outbound.tag
+							end
+						else
+							local fb_tag = "blc-fallback-" .. fallback_node_id
+							local outboundTag = gen_outbound_get_tag(flag, fallback_node_id, fb_tag, { fragment = singbox_settings.fragment == "1" or nil, record_fragment = singbox_settings.record_fragment == "1" or nil, run_socks_instance = not no_run })
+							if outboundTag then
+								valid_nodes[#valid_nodes + 1] = outboundTag
+							end
+						end
+					end
+				end
+			end
+
+			local strategy = _node.balancingStrategy or "random"
+			local probe_url = (_node.useCustomProbeUrl == "1" and _node.probeUrl and _node.probeUrl ~= "") and _node.probeUrl or "https://www.gstatic.com/generate_204"
+			local probe_interval = api.format_go_time(_node.probeInterval)
+			if probe_interval == "0s" then
+				probe_interval = "1m"
+			elseif not probe_interval:find("[hm]") and tonumber(probe_interval:match("%d+")) and tonumber(probe_interval:match("%d+")) < 10 then
+				probe_interval = "10s"
+			end
+			local need_probe = _node.useCustomProbeUrl == "1" or strategy == "leastPing" or strategy == "leastLoad" or fallback_node_id
+
+			local outbound
+			if strategy == "leastPing" or strategy == "leastLoad" or (strategy ~= "roundRobin" and strategy ~= "random") or not singbox_supports_loadbalance() then
+				local tolerance = 50
+				if strategy == "leastLoad" then
+					local t = tonumber(_node.tolerance)
+					tolerance = (t and t > 0) and t or 50
+				end
+				outbound = {
+					type = "urltest",
+					tag = balancing_tag,
+					outbounds = valid_nodes,
+					url = probe_url,
+					interval = probe_interval,
+					tolerance = tolerance,
+				}
+			else
+				local lb_strategy = strategy == "roundRobin" and "round-robin" or "consistent-hashing"
+				outbound = {
+					type = "loadbalance",
+					tag = balancing_tag,
+					strategy = lb_strategy,
+					outbounds = valid_nodes,
+				}
+				if need_probe then
+					outbound.url = probe_url
+					outbound.interval = probe_interval
+				end
+			end
+			return outbound
+		end
+
 		function set_outbound_detour(node, outbound, outbounds_table)
 			if not node or not outbound or not outbounds_table then return nil end
 			local default_outTag = outbound.tag
@@ -1415,7 +1533,9 @@ function gen_config(var)
 					local preproxy_node = get_node_by_id(node.preproxy_node)
 					if preproxy_node then
 						local preproxy_outbound, exist
-						if preproxy_node.protocol == "_urltest" then
+						if preproxy_node.protocol == "_balancing" then
+							preproxy_outbound, exist = gen_balancing_outbound(preproxy_node)
+						elseif preproxy_node.protocol == "_urltest" then
 							preproxy_outbound, exist = gen_urltest_outbound(preproxy_node)
 						else
 							preproxy_outbound = gen_outbound(node[".name"], preproxy_node)
@@ -1505,7 +1625,12 @@ function gen_config(var)
 					proxy_table.to_node = nil
 				end
 				local outbound, exist
-				if node.protocol == "_urltest" then
+				if node.protocol == "_balancing" then
+					outbound, exist = gen_balancing_outbound(node)
+					if exist then
+						return outbound.tag
+					end
+				elseif node.protocol == "_urltest" then
 					outbound, exist = gen_urltest_outbound(node)
 					if exist then
 						return outbound.tag
